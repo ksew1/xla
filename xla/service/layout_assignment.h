@@ -946,6 +946,11 @@ class LayoutAssignment : public HloModulePass, public HloDataflowPropagation {
   absl::flat_hash_map<const HloComputation*, ComputationLayout>
       conditional_mismatch_;
 
+  // Loop invariant elements of copy disabled while loops whose layout was
+  // changed for a consumer while assigning layouts.
+  absl::flat_hash_set<std::pair<const HloInstruction*, ShapeIndex>>
+      relayouted_while_invariants_;
+
   // Every copy added to the module by the layout assignment pass is registered
   // here.
   absl::flat_hash_set<HloInstruction*> added_copies_;
