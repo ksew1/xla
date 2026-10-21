@@ -839,7 +839,7 @@ absl::Status RunOptimizationPasses(
 
   // Add the DotOperandConverter after any potential upcasts done as part of
   // the OperandUpcaster, so that the DotOperandConverter becomes a no-op.
-  pipeline.AddPass<DotOperandConverter>();
+  pipeline.AddPass<DotOperandConverter>(gpu_version);
 
   pipeline.AddPass<SubByteNormalization>(
       SubByteNormalization::SET_ELEMENT_SIZE);

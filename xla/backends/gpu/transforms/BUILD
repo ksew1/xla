@@ -1577,11 +1577,15 @@ cc_library(
         "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
         "//xla/hlo/transforms/expanders:op_expander_pass",
-        "//xla/tsl/platform:errors",
+        "//xla/stream_executor:device_description",
+        "//xla/stream_executor/cuda:cuda_compute_capability",
+        "//xla/stream_executor/rocm:rocm_compute_capability",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/status:status_macros",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:string_view",
+        "@tsl//tsl/platform:tensor_float_32_hdr_lib",
     ],
 )
 
@@ -1603,9 +1607,13 @@ xla_test(
             "//xla/backends/gpu/tests:hlo_pjrt_gpu_test_base",
             "//xla/hlo/ir:hlo",
             "//xla/hlo/utils:hlo_matchers",
+            "//xla/stream_executor:device_description",
+            "//xla/stream_executor/cuda:cuda_compute_capability",
+            "//xla/stream_executor/rocm:rocm_compute_capability",
             "@com_google_absl//absl/strings",
             "@com_google_absl//absl/strings:string_view",
             "@com_google_googletest//:gtest_main",
+            "@tsl//tsl/platform:tensor_float_32_hdr_lib",
         ],
 )
 
