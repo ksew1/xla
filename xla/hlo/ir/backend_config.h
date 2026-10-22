@@ -104,6 +104,12 @@ class BackendConfigWrapper {
   }
   absl::Status GetProto(tsl::protobuf::Message* output_proto) const;
 
+  // Returns an id of the current contents of this wrapper. An id is never
+  // reused: any change of the contents makes the wrapper take a new one. Equal
+  // ids thus imply equal contents (but not vice versa), so values derived from
+  // the contents can be cached keyed by this id.
+  uint64_t content_id() const;
+
   // Type trait to check if a type has the mutable_custom_call_metadata method.
   template <typename T, typename = void>
   struct has_mutable_custom_call_metadata : std::false_type {};
@@ -150,6 +156,7 @@ class BackendConfigWrapper {
     absl::Status status = fn(static_cast<ConfigProto*>(proto_.get()));
     // Invalidate string cache, as the proto might have been mutated.
     raw_string_.clear();
+    content_id_ = 0;
     return status;
   }
 
@@ -172,6 +179,10 @@ class BackendConfigWrapper {
   mutable std::unique_ptr<tsl::protobuf::Message> proto_
       ABSL_GUARDED_BY(mutex_);
   mutable std::string raw_string_ ABSL_GUARDED_BY(mutex_);
+  // Assigned on first use by content_id(), so wrappers whose id is never
+  // queried cost nothing. 0 means unassigned and is set whenever the contents
+  // change.
+  mutable uint64_t content_id_ ABSL_GUARDED_BY(mutex_) = 0;
 };
 
 class HloInstruction;

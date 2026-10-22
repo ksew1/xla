@@ -15,12 +15,14 @@ limitations under the License.
 
 #include "xla/hlo/ir/backend_config.h"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/base/attributes.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/status/status.h"
 #include "absl/status/status_macros.h"
@@ -41,6 +43,10 @@ std::string RemoveWaitOnOperationQueues(std::string&& s) {
   RE2::GlobalReplace(&s, *kReWaitOnOperationQueues, "");
   return std::move(s);
 }
+
+// Source of BackendConfigWrapper content ids. Starts at 1 because 0 marks an
+// unassigned id.
+ABSL_CONST_INIT std::atomic<uint64_t> next_content_id(1);
 }  // namespace
 
 namespace xla {
@@ -116,6 +122,14 @@ absl::Status BackendConfigWrapper::GetProto(
   return absl::OkStatus();
 }
 
+uint64_t BackendConfigWrapper::content_id() const {
+  absl::MutexLock lock{mutex_};
+  if (content_id_ == 0) {
+    content_id_ = next_content_id.fetch_add(1, std::memory_order_relaxed);
+  }
+  return content_id_;
+}
+
 BackendConfigWrapper& BackendConfigWrapper::operator=(
     BackendConfigWrapper&& other) {
   std::unique_ptr<tsl::protobuf::Message> temp_proto;
@@ -126,12 +140,14 @@ BackendConfigWrapper& BackendConfigWrapper::operator=(
     absl::MutexLock other_lock{other.mutex_};
     temp_proto = std::move(other.proto_);
     temp_string = std::move(other.raw_string_);
+    other.content_id_ = 0;
   }
 
   absl::MutexLock this_lock{mutex_};
 
   proto_ = std::move(temp_proto);
   raw_string_ = std::move(temp_string);
+  content_id_ = 0;
   return *this;
 }
 

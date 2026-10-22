@@ -553,6 +553,41 @@ TEST_F(HloInstructionTest, DeriveComputeTypeAttribute) {
   EXPECT_FALSE(instr1.has_frontend_attributes());
 }
 
+TEST_F(HloInstructionTest, BackendConfigContentIdChangesWithBackendConfig) {
+  auto set_algorithm = [](HloInstruction& instr,
+                          PrecisionConfig::Algorithm algorithm) {
+    return instr.MutateBackendConfig<PrecisionConfig>(
+        [algorithm](PrecisionConfig* config) {
+          config->set_algorithm(algorithm);
+          return absl::OkStatus();
+        });
+  };
+  HloConstantInstruction instr(ShapeUtil::MakeShape(U32, {3, 2}));
+  PrecisionConfig config;
+  config.set_algorithm(PrecisionConfig::ALG_DOT_F16_F16_F32);
+  ASSERT_OK(instr.set_backend_config(config));
+  const uint64_t initial_id = instr.backend_config_content_id();
+  EXPECT_EQ(instr.backend_config_content_id(), initial_id);
+
+  HloConstantInstruction sharing(ShapeUtil::MakeShape(U32, {3, 2}));
+  sharing.CopyBackendConfigFrom(&instr);
+  EXPECT_EQ(sharing.backend_config_content_id(), initial_id);
+
+  // A shared backend config is copied before it is mutated.
+  ASSERT_OK(set_algorithm(instr, PrecisionConfig::ALG_DOT_BF16_BF16_F32));
+  const uint64_t copied_id = instr.backend_config_content_id();
+  EXPECT_NE(copied_id, initial_id);
+  EXPECT_EQ(sharing.backend_config_content_id(), initial_id);
+
+  // An unshared backend config is mutated in place.
+  ASSERT_OK(set_algorithm(instr, PrecisionConfig::ALG_DOT_F16_F16_F16));
+  const uint64_t in_place_id = instr.backend_config_content_id();
+  EXPECT_NE(in_place_id, copied_id);
+
+  instr.set_raw_backend_config_string("{}");
+  EXPECT_NE(instr.backend_config_content_id(), in_place_id);
+}
+
 TEST_F(HloInstructionTest, CloneImplScheduledAsyncOp) {
   constexpr absl::string_view kHlo = R"(
 HloModule main, is_scheduled=true
