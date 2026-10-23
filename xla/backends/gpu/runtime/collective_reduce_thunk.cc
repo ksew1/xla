@@ -233,7 +233,7 @@ absl::Status RunCollectiveReduce(ReductionKind reduction_kind,
       ABSL_RETURN_IF_ERROR(gpu_comm->LaunchReduce(
           buffer.source_buffer, buffer.destination_buffer, buffer.element_type,
           buffer.element_count, reduction_kind, root,
-          GpuCollectives::On(stream)));
+          GpuCollectives::On(stream), buffer.IsRMA()));
     }
     return absl::OkStatus();
   });

@@ -98,31 +98,32 @@ class FakeGpuCommunicator : public GpuCommunicator {
  public:
   absl::Status LaunchAllReduce(se::DeviceAddressBase, se::DeviceAddressBase,
                                PrimitiveType, size_t, ReductionKind,
-                               const Executor&) override {
+                               const Executor&, bool) override {
     return absl::UnimplementedError("unused");
   }
 
   absl::Status LaunchBroadcast(se::DeviceAddressBase, se::DeviceAddressBase,
-                               PrimitiveType, size_t, RankId,
-                               const Executor&) override {
+                               PrimitiveType, size_t, RankId, const Executor&,
+                               bool) override {
     return absl::UnimplementedError("unused");
   }
 
   absl::Status LaunchReduceScatter(se::DeviceAddressBase, se::DeviceAddressBase,
                                    PrimitiveType, size_t, ReductionKind,
-                                   const Executor&) override {
+                                   const Executor&, bool) override {
     return absl::UnimplementedError("unused");
   }
 
   absl::Status LaunchAllGather(se::DeviceAddressBase, se::DeviceAddressBase,
-                               PrimitiveType, size_t,
-                               const Executor&) override {
+                               PrimitiveType, size_t, const Executor&,
+                               bool) override {
     return absl::UnimplementedError("unused");
   }
 
   absl::Status LaunchAllToAll(absl::InlinedVector<se::DeviceAddressBase, 4>,
                               absl::InlinedVector<se::DeviceAddressBase, 4>,
-                              PrimitiveType, size_t, const Executor&) override {
+                              PrimitiveType, size_t, const Executor&,
+                              bool) override {
     return absl::UnimplementedError("unused");
   }
 

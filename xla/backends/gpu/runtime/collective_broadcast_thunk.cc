@@ -194,7 +194,7 @@ absl::Status RunCollectiveBroadcast(std::vector<DeviceBufferPair>& buffers,
           // Always use rank 0 since we always broadcast from the first id
           // in replica_groups
           src_addr, dest_addr, buffer.element_type, buffer.element_count, root,
-          GpuCollectives::On(stream)));
+          GpuCollectives::On(stream), buffer.IsRMA()));
     }
     return absl::OkStatus();
   });

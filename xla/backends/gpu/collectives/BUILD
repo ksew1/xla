@@ -477,17 +477,24 @@ xla_test(
         "//xla/stream_executor/cuda:cuda_compute_capability",
         "//xla/stream_executor/cuda:cuda_platform",  # buildcleaner: keep
         "//xla/tsl/concurrency:executor",
+        "//xla/tsl/cuda:nccl",
         "//xla/tsl/platform:env",
         "//xla/tsl/util:tied_ref",
+        "@com_google_absl//absl/cleanup",
+        "@com_google_absl//absl/functional:function_ref",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/log:globals",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_macros",
         "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/time",
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",  # buildcleaner: keep
+        "@local_config_cuda//cuda:cuda_headers",
     ],
 )
 
@@ -1005,7 +1012,13 @@ cc_library(
     tags = [
         "gpu",
         "oneapi-only",
-    ],
+    ] + if_google([
+        # TODO(b/456585142): Currently we don't support building the SYCL backend.
+        "manual",
+        "nobuilder",
+        "nofixdeps",
+        "notap",
+    ]),
     visibility = ["//visibility:private"],
     deps = [
         "//xla:util",
@@ -1024,7 +1037,13 @@ cc_library(
     tags = [
         "gpu",
         "oneapi-only",
-    ],
+    ] + if_google([
+        # TODO(b/456585142): Currently we don't support building the SYCL backend.
+        "manual",
+        "nobuilder",
+        "nofixdeps",
+        "notap",
+    ]),
     visibility = ["//visibility:private"],
     deps = [
         ":gpu_clique_key",
@@ -1064,7 +1083,13 @@ cc_library(
     tags = [
         "gpu",
         "oneapi-only",
-    ],
+    ] + if_google([
+        # TODO(b/456585142): Currently we don't support building the SYCL backend.
+        "manual",
+        "nobuilder",
+        "nofixdeps",
+        "notap",
+    ]),
     visibility = ["//visibility:private"],
     deps = [
         ":gpu_collectives",

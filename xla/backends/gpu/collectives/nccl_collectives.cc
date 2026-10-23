@@ -316,7 +316,8 @@ static absl::StatusOr<ncclConfig_t> AsNcclConfig(
                               DebugOptions::ALLCOLLECTIVES;
                      });
 
-  if (symmetric_buffers_enabled && config.use_minimal_resource) {
+  if ((symmetric_buffers_enabled || nccl_version >= NCCL_VERSION(2, 32, 0)) &&
+      config.use_minimal_resource) {
     VLOG(1) << "Setting CTAPolicy to NCCL_CTA_POLICY_ZERO";
     comm_config.CTAPolicy = NCCL_CTA_POLICY_ZERO;
   }

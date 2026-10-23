@@ -97,7 +97,8 @@ absl::Status RunAllReduce(ReductionKind reduction_kind,
     for (DeviceBufferPair& buffer : buffers) {
       ABSL_RETURN_IF_ERROR(gpu_comm->LaunchAllReduce(
           buffer.source_buffer, buffer.destination_buffer, buffer.element_type,
-          buffer.element_count, reduction_kind, GpuCollectives::On(stream)));
+          buffer.element_count, reduction_kind, GpuCollectives::On(stream),
+          buffer.IsRMA()));
     }
     return absl::OkStatus();
   });
@@ -291,7 +292,7 @@ absl::Status RunReduceScatter(ReductionKind reduction_kind,
       ABSL_RETURN_IF_ERROR(gpu_comm->LaunchReduceScatter(
           buffer.source_buffer, buffer.destination_buffer, buffer.element_type,
           buffer.element_count / num_ranks, reduction_kind,
-          GpuCollectives::On(stream)));
+          GpuCollectives::On(stream), buffer.IsRMA()));
     }
     return absl::OkStatus();
   });

@@ -239,7 +239,7 @@ absl::Status RunAllGather(std::vector<DeviceBufferPair>& buffers,
     for (DeviceBufferPair& buffer : buffers) {
       ABSL_RETURN_IF_ERROR(gpu_comm->LaunchAllGather(
           buffer.source_buffer, buffer.destination_buffer, buffer.element_type,
-          buffer.element_count, GpuCollectives::On(stream)));
+          buffer.element_count, GpuCollectives::On(stream), buffer.IsRMA()));
     }
     return absl::OkStatus();
   });
