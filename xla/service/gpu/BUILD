@@ -60,6 +60,7 @@ tf_proto_library(
         "//xla:xla_data_proto",
         "//xla:xla_proto",
         "//xla/codegen/xtile:xtile_config_proto",
+        "//xla/stream_executor/gpu:blas_lt_matmul_algorithm_proto",
         "//xla/tsl/protobuf:dnn_proto",
     ],
 )
@@ -551,6 +552,7 @@ cc_library(
         "//xla/stream_executor:device_description",
         "//xla/stream_executor:launch_dim",
         "//xla/stream_executor:memory_space",
+        "//xla/stream_executor/gpu:blas_lt_matmul_algorithm",
         "//xla/stream_executor/gpu:gpu_blas_lt",
         "//xla/tools:hlo_decomposer_lib",
         "//xla/tsl/concurrency:future",
