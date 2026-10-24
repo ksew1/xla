@@ -288,6 +288,7 @@ xla_test(
     ],
     deps = [
         ":cuda_test",
+        ":cupti_buffer_events",
         ":cupti_collector",
         ":cupti_error_manager",
         ":cupti_interface",
