@@ -33,6 +33,7 @@ limitations under the License.
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/ThreadPool.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -81,6 +82,15 @@ namespace ifrt {
 
 namespace {
 
+// Returns the thread pool dedicated to the MLIR contexts that hold the atom
+// programs being compiled. A single process-wide pool avoids creating a thread
+// pool per compilation, while still allowing the context to be used safely
+// from multiple threads.
+llvm::ThreadPoolInterface& GetAtomProgramThreadPool() {
+  static llvm::DefaultThreadPool* const pool = new llvm::DefaultThreadPool();
+  return *pool;
+}
+
 class IfrtCompileAtomProgramPass
     : public mlir::PassWrapper<IfrtCompileAtomProgramPass,
                                mlir::OperationPass<mlir::ModuleOp>> {
@@ -96,7 +106,13 @@ class IfrtCompileAtomProgramPass
             mlir::MLIRContext::Threading::DISABLED)),
         compile_options_overrides_(std::move(compile_options_overrides)),
         atom_executable_future_map_(std::move(atom_executable_future_map)),
-        user_context_(UserContextScope::current()) {}
+        user_context_(UserContextScope::current()) {
+    // Atom programs share `hlo_program_context_` (to share interned strings)
+    // and are compiled concurrently, so the context must be thread-safe. A
+    // context with threading disabled is not; attach a dedicated thread pool
+    // instead of letting the context create its own.
+    hlo_program_context_->setThreadPool(GetAtomProgramThreadPool());
+  }
 
   llvm::StringRef getArgument() const override {
     return "ifrt-compile-atom-program";

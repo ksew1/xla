@@ -24,6 +24,7 @@ limitations under the License.
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
+#include "llvm/Support/ThreadPool.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Bytecode/BytecodeWriter.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -48,6 +49,13 @@ namespace xla {
 namespace ifrt {
 
 namespace {
+
+// Returns the thread pool shared by the MLIR contexts created when
+// deserializing IFRT IR programs.
+llvm::ThreadPoolInterface& GetDeserializationThreadPool() {
+  static llvm::DefaultThreadPool* const pool = new llvm::DefaultThreadPool();
+  return *pool;
+}
 
 // Serialization/deserialization for `IfrtIRProgram`.
 class IfrtIRProgramSerDes : public RTTIExtends<IfrtIRProgramSerDes, SerDes> {
@@ -161,8 +169,13 @@ class IfrtIRProgramSerDes : public RTTIExtends<IfrtIRProgramSerDes, SerDes> {
     bool use_existing_context = false;
     std::unique_ptr<mlir::MLIRContext> context;
     if (!deserialize_options || !deserialize_options->context) {
+      // Create the context without its own thread pool and attach a shared
+      // one instead: creating a thread pool per deserialized program can
+      // create too many threads (b/476181615), while a context with threading
+      // disabled is not safe to use from multiple threads.
       context = std::make_unique<mlir::MLIRContext>(
           mlir::MLIRContext::Threading::DISABLED);
+      context->setThreadPool(GetDeserializationThreadPool());
     } else {
       use_existing_context = true;
       context =
