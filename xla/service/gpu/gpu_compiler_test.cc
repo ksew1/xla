@@ -3565,5 +3565,43 @@ TEST_F(GpuCompilerTest, DevicelessCollectiveFusionWithTopologyFlag) {
               absl_testing::IsOkAndHolds(true));
 }
 
+TEST_F(GpuCompilerTest, InlinesXlaLateCallsOnGpu) {
+  constexpr absl::string_view kHloText = R"hlo(
+HloModule InlinesXlaLateCallsOnGpu
+
+%callee (x: f32[]) -> f32[] {
+  %x = f32[] parameter(0)
+  ROOT %mul = f32[] multiply(%x, %x)
+}
+
+ENTRY %main (a: f32[]) -> f32[] {
+  %a = f32[] parameter(0)
+  ROOT %call = f32[] call(%a), to_apply=%callee, frontend_attributes={inlineable="xla_late"}
+}
+  )hlo";
+
+  HloModuleConfig config = GetModuleConfigForTest();
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                       ParseAndReturnVerifiedModule(kHloText, config));
+
+  Compiler::CompileOptions compile_options;
+  compile_options.gpu_topology =
+      GetSingleDeviceGpuTopology(/*platform_version=*/"", gpu_target_config());
+  ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<HloModule> optimized_module,
+      compiler()->RunHloPasses(std::move(module), /*executor=*/nullptr,
+                               compile_options));
+
+  for (const HloComputation* computation :
+       optimized_module->MakeNonfusionComputations()) {
+    for (const HloInstruction* instruction : computation->instructions()) {
+      EXPECT_NE(instruction->opcode(), HloOpcode::kCall);
+      EXPECT_FALSE(
+          instruction->has_frontend_attributes() &&
+          instruction->frontend_attributes().map().contains("inlineable"));
+    }
+  }
+}
+
 }  // namespace gpu
 }  // namespace xla
