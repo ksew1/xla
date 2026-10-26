@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "xla/backends/gpu/transforms/scan_rewriter_triton.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -30,9 +31,11 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/layout_util.h"
 #include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/shape.h"
+#include "xla/shape_util.h"
 
 namespace xla {
 namespace gpu {
@@ -46,6 +49,101 @@ namespace {
 // Shorter scans are faster with Triton at any batch size.
 constexpr int64_t kMinLongScanDimSize = 32768;
 constexpr int64_t kMinRowsForLongScan = 64;
+
+// For small scans (up to 3 radix-16 tree reduction levels in
+// AssociativeScanRewriter), a native loop/input fusion that absorbs the scan
+// together with surrounding data-movement or indexing ops beats splitting the
+// fusion around a Triton scan kernel.
+constexpr int64_t kMaxSmallScanDimSize = 1024;
+
+// Returns true for unfused data-movement or indexing ops that `PriorityFusion`
+// can merge with the lowered `AssociativeScanRewriter` tree into a native
+// `kLoop` or `kInput` fusion, but cannot fuse with `kScan` into a Triton
+// kernel. Note that `ScanRewriterTriton` runs before `AssociativeScanRewriter`
+// and `PriorityFusion`, so native `kLoop`/`kInput` fusions do not exist yet at
+// this phase of the pipeline. `kTranspose` is intentionally omitted because it
+// is supported by Triton (`IsTritonSupportedInstruction` and
+// `SymbolicTileAnalysis`) and fuses directly into the Triton scan kernel.
+bool IsLoopDataMovementOrIndexingOp(const HloInstruction* instr) {
+  switch (instr->opcode()) {
+    case HloOpcode::kConcatenate:
+    case HloOpcode::kDynamicSlice:
+    case HloOpcode::kDynamicUpdateSlice:
+    case HloOpcode::kGather:
+    case HloOpcode::kPad:
+    case HloOpcode::kReverse:
+    case HloOpcode::kScatter:
+    case HloOpcode::kSlice:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool IsTransparentForNeighborhoodWalk(const HloInstruction* instr) {
+  return instr->IsElementwise() || instr->opcode() == HloOpcode::kBroadcast ||
+         instr->opcode() == HloOpcode::kBitcast ||
+         instr->opcode() == HloOpcode::kReshape;
+}
+
+// Performs a bounded BFS from `scan`'s input (through non-scalar transparent
+// producers) and output (through transparent users of GTE 0) to check whether
+// the scan's fusion neighborhood reaches any op in
+// `IsLoopDataMovementOrIndexingOp`.
+bool TouchesLoopDataMovementOrIndexingOp(const HloScanInstruction* scan) {
+  // Maximum number of BFS nodes to visit in each direction when searching for
+  // nearby data-movement or indexing ops. Bounds compile-time complexity on
+  // deep graphs.
+  constexpr size_t kMaxNeighborhoodVisitCount = 32;
+
+  absl::flat_hash_set<const HloInstruction*> visited;
+  std::vector<const HloInstruction*> queue;
+  const HloInstruction* input = scan->operand(0);
+  visited.insert(input);
+  queue.push_back(input);
+  for (size_t i = 0; i < queue.size() && i < kMaxNeighborhoodVisitCount; ++i) {
+    const HloInstruction* curr = queue[i];
+    if (IsLoopDataMovementOrIndexingOp(curr)) {
+      return true;
+    }
+    if (IsTransparentForNeighborhoodWalk(curr)) {
+      for (const HloInstruction* operand : curr->operands()) {
+        if (ShapeUtil::IsEffectiveScalar(operand->shape())) {
+          continue;
+        }
+        if (visited.insert(operand).second) {
+          queue.push_back(operand);
+        }
+      }
+    }
+  }
+
+  queue.clear();
+  for (const HloInstruction* user : scan->users()) {
+    if (user->opcode() == HloOpcode::kGetTupleElement &&
+        user->tuple_index() == 0) {
+      for (const HloInstruction* gte_user : user->users()) {
+        if (visited.insert(gte_user).second) {
+          queue.push_back(gte_user);
+        }
+      }
+    }
+  }
+  for (size_t i = 0; i < queue.size() && i < kMaxNeighborhoodVisitCount; ++i) {
+    const HloInstruction* curr = queue[i];
+    if (IsLoopDataMovementOrIndexingOp(curr)) {
+      return true;
+    }
+    if (IsTransparentForNeighborhoodWalk(curr)) {
+      for (const HloInstruction* user : curr->users()) {
+        if (visited.insert(user).second) {
+          queue.push_back(user);
+        }
+      }
+    }
+  }
+  return false;
+}
 
 // Complements `IsTritonSupportedInstruction` with graph-level checks (non-root,
 // only GTE 0 users) and profitability heuristics.
@@ -68,6 +166,17 @@ bool IsEligibleScan(const HloInstruction* instr) {
   int64_t rank = input_shape.dimensions().size();
   int64_t scan_dim = scan->scan_dimension();
   int64_t scan_dim_size = input_shape.dimensions(scan_dim);
+  if (scan_dim_size <= 1) {
+    return false;
+  }
+  // Restrict to the most minor dimension for coalescing. Triton can handle
+  // non-minor scans, but they are generally less efficient.
+  if (input_shape.has_layout() &&
+      !input_shape.layout().minor_to_major().empty() &&
+      LayoutUtil::Minor(input_shape.layout(), 0) != scan_dim) {
+    return false;
+  }
+
   int64_t num_rows = 1;
   for (int64_t i = 0; i < rank; ++i) {
     if (i != scan_dim) {
@@ -86,6 +195,16 @@ bool IsEligibleScan(const HloInstruction* instr) {
       return false;
     }
   }
+
+  const HloInstruction* input = scan->operand(0);
+  bool has_custom_fusion_producer =
+      input->opcode() == HloOpcode::kFusion &&
+      input->fusion_kind() == HloInstruction::FusionKind::kCustom;
+  if (scan_dim_size <= kMaxSmallScanDimSize && !has_custom_fusion_producer &&
+      TouchesLoopDataMovementOrIndexingOp(scan)) {
+    return false;
+  }
+
   return true;
 }
 

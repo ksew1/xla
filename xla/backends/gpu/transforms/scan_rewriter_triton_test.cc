@@ -409,6 +409,309 @@ ENTRY main {
   EXPECT_FALSE(changed);
 }
 
+TEST_F(ScanRewriterTritonTest, DegenerateScanDimNotRewritten) {
+  constexpr absl::string_view kHloText = R"(
+HloModule degenerate_scan_dim
+
+combiner {
+  in = s32[8] parameter(0)
+  carry = s32[8] parameter(1)
+  add = s32[8] add(carry, in)
+  ROOT t = (s32[8], s32[8]) tuple(add, add)
+}
+
+ENTRY main {
+  input = s32[8,1]{1,0} parameter(0)
+  init = s32[8]{0} parameter(1)
+  scan = (s32[8,1]{1,0}, s32[8]{0}) scan(input, init), dimensions={1}, num_carries=1, to_apply=combiner, is_associative=true
+  ROOT gte0 = s32[8,1]{1,0} get-tuple-element(scan), index=0
+}
+)";
+
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(kHloText));
+
+  ScanRewriterTriton rewriter(device_info_);
+  ASSERT_OK_AND_ASSIGN(bool changed, rewriter.Run(module.get()));
+  EXPECT_FALSE(changed);
+}
+
+TEST_F(ScanRewriterTritonTest, NonMinorPhysicalScanDimNotRewritten) {
+  constexpr absl::string_view kHloText = R"(
+HloModule non_minor_physical_scan_dim
+
+combiner {
+  in = s32[8] parameter(0)
+  carry = s32[8] parameter(1)
+  add = s32[8] add(carry, in)
+  ROOT t = (s32[8], s32[8]) tuple(add, add)
+}
+
+ENTRY main {
+  input = s32[8,8]{0,1} parameter(0)
+  init = s32[8]{0} parameter(1)
+  scan = (s32[8,8]{0,1}, s32[8]{0}) scan(input, init), dimensions={1}, num_carries=1, to_apply=combiner, is_associative=true
+  ROOT gte0 = s32[8,8]{0,1} get-tuple-element(scan), index=0
+}
+)";
+
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(kHloText));
+
+  ScanRewriterTriton rewriter(device_info_);
+  ASSERT_OK_AND_ASSIGN(bool changed, rewriter.Run(module.get()));
+  EXPECT_FALSE(changed);
+}
+
+TEST_F(ScanRewriterTritonTest,
+       SmallScanWithSliceProducerAndPadConsumerNotRewritten) {
+  constexpr absl::string_view kHloText = R"(
+HloModule small_scan_slice_pad
+
+combiner {
+  in = s32[8] parameter(0)
+  carry = s32[8] parameter(1)
+  add = s32[8] add(carry, in)
+  ROOT t = (s32[8], s32[8]) tuple(add, add)
+}
+
+ENTRY main {
+  input = s32[8,1024]{1,0} parameter(0)
+  sliced = s32[8,1023]{1,0} slice(input), slice={[0:8], [0:1023]}
+  zero = s32[] constant(0)
+  init = s32[8]{0} broadcast(zero), dimensions={}
+  scan = (s32[8,1023]{1,0}, s32[8]{0}) scan(sliced, init), dimensions={1}, num_carries=1, to_apply=combiner, is_associative=true
+  gte0 = s32[8,1023]{1,0} get-tuple-element(scan), index=0
+  ROOT padded = s32[8,1024]{1,0} pad(gte0, zero), padding=0_0x1_0
+}
+)";
+
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(kHloText));
+
+  ScanRewriterTriton rewriter(device_info_);
+  ASSERT_OK_AND_ASSIGN(bool changed, rewriter.Run(module.get()));
+  EXPECT_FALSE(changed);
+}
+
+TEST_F(ScanRewriterTritonTest,
+       SmallScanWithElementwiseProducerAndConcatenateConsumerNotRewritten) {
+  constexpr absl::string_view kHloText = R"(
+HloModule small_scan_max_concat
+
+combiner {
+  in = s32[] parameter(0)
+  carry = s32[] parameter(1)
+  add = s32[] add(carry, in)
+  ROOT t = (s32[], s32[]) tuple(add, add)
+}
+
+ENTRY main {
+  input = s32[128]{0} parameter(0)
+  zero = s32[] constant(0)
+  zeros = s32[128]{0} broadcast(zero), dimensions={}
+  clamped = s32[128]{0} maximum(input, zeros)
+  scan = (s32[128]{0}, s32[]) scan(clamped, zero), dimensions={0}, num_carries=1, to_apply=combiner, is_associative=true
+  gte0 = s32[128]{0} get-tuple-element(scan), index=0
+  prefix = s32[1]{0} broadcast(zero), dimensions={}
+  ROOT concat = s32[129]{0} concatenate(prefix, gte0), dimensions={0}
+}
+)";
+
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(kHloText));
+
+  ScanRewriterTriton rewriter(device_info_);
+  ASSERT_OK_AND_ASSIGN(bool changed, rewriter.Run(module.get()));
+  EXPECT_FALSE(changed);
+}
+
+TEST_F(ScanRewriterTritonTest,
+       SmallScanWithElementwiseConsumerFeedingGatherNotRewritten) {
+  constexpr absl::string_view kHloText = R"(
+HloModule small_scan_gather_consumer
+
+combiner {
+  in = s32[] parameter(0)
+  carry = s32[] parameter(1)
+  add = s32[] add(carry, in)
+  ROOT t = (s32[], s32[]) tuple(add, add)
+}
+
+ENTRY main {
+  input = s32[132]{0} parameter(0)
+  table = s32[16]{0} parameter(1)
+  zero = s32[] constant(0)
+  scan = (s32[132]{0}, s32[]) scan(input, zero), dimensions={0}, num_carries=1, to_apply=combiner, is_associative=true
+  gte0 = s32[132]{0} get-tuple-element(scan), index=0
+  one = s32[132]{0} broadcast(s32[] constant(1)), dimensions={}
+  shifted = s32[132]{0} add(gte0, one)
+  indices = s32[132,1]{1,0} bitcast(shifted)
+  ROOT gathered = s32[132,1]{1,0} gather(table, indices), offset_dims={1},
+    collapsed_slice_dims={}, start_index_map={0}, index_vector_dim=1,
+    slice_sizes={1}
+}
+)";
+
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(kHloText));
+
+  ScanRewriterTriton rewriter(device_info_);
+  ASSERT_OK_AND_ASSIGN(bool changed, rewriter.Run(module.get()));
+  EXPECT_FALSE(changed);
+}
+
+TEST_F(ScanRewriterTritonTest,
+       SmallScanWithCustomFusionProducerAndConcatenateConsumerRewritten) {
+  constexpr absl::string_view kHloText = R"(
+HloModule small_scan_custom_fusion_producer
+
+combiner {
+  in = f32[64] parameter(0)
+  carry = f32[64] parameter(1)
+  add = f32[64] add(carry, in)
+  ROOT t = (f32[64], f32[64]) tuple(add, add)
+}
+
+softmax_comp {
+  ROOT p0 = f32[64,64]{1,0} parameter(0)
+}
+
+ENTRY main {
+  logits = f32[64,64]{1,0} parameter(0)
+  other = f32[64,64]{1,0} parameter(1)
+  probs = f32[64,64]{1,0} fusion(logits), kind=kCustom, calls=softmax_comp,
+    backend_config={"fusion_backend_config":{"kind":"__triton"}}
+  zero = f32[] constant(0)
+  init = f32[64]{0} broadcast(zero), dimensions={}
+  scan = (f32[64,64]{1,0}, f32[64]{0}) scan(probs, init), dimensions={1}, num_carries=1, to_apply=combiner, is_associative=true
+  gte0 = f32[64,64]{1,0} get-tuple-element(scan), index=0
+  sub = f32[64,64]{1,0} subtract(gte0, probs)
+  ROOT concat = f32[128,64]{1,0} concatenate(sub, other), dimensions={0}
+}
+)";
+
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(kHloText));
+
+  ScanRewriterTriton rewriter(device_info_);
+  ASSERT_OK_AND_ASSIGN(bool changed, rewriter.Run(module.get()));
+  EXPECT_TRUE(changed);
+}
+
+TEST_F(ScanRewriterTritonTest,
+       LargeScanWithSliceProducerAndPadConsumerRewritten) {
+  constexpr absl::string_view kHloText = R"(
+HloModule large_scan_slice_pad
+
+combiner {
+  in = s32[8] parameter(0)
+  carry = s32[8] parameter(1)
+  add = s32[8] add(carry, in)
+  ROOT t = (s32[8], s32[8]) tuple(add, add)
+}
+
+ENTRY main {
+  input = s32[8,4097]{1,0} parameter(0)
+  sliced = s32[8,4096]{1,0} slice(input), slice={[0:8], [0:4096]}
+  zero = s32[] constant(0)
+  init = s32[8]{0} broadcast(zero), dimensions={}
+  scan = (s32[8,4096]{1,0}, s32[8]{0}) scan(sliced, init), dimensions={1}, num_carries=1, to_apply=combiner, is_associative=true
+  gte0 = s32[8,4096]{1,0} get-tuple-element(scan), index=0
+  ROOT padded = s32[8,4097]{1,0} pad(gte0, zero), padding=0_0x1_0
+}
+)";
+
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(kHloText));
+
+  ScanRewriterTriton rewriter(device_info_);
+  ASSERT_OK_AND_ASSIGN(bool changed, rewriter.Run(module.get()));
+  EXPECT_TRUE(changed);
+}
+
+TEST_F(ScanRewriterTritonTest, SmallScanWithConvertProducerRewritten) {
+  constexpr absl::string_view kHloText = R"(
+HloModule small_scan_convert_producer
+
+combiner {
+  in = f32[8] parameter(0)
+  carry = f32[8] parameter(1)
+  add = f32[8] add(carry, in)
+  ROOT t = (f32[8], f32[8]) tuple(add, add)
+}
+
+ENTRY main {
+  input = bf16[8,256]{1,0} parameter(0)
+  converted = f32[8,256]{1,0} convert(input)
+  zero = f32[] constant(0)
+  init = f32[8]{0} broadcast(zero), dimensions={}
+  scan = (f32[8,256]{1,0}, f32[8]{0}) scan(converted, init), dimensions={1}, num_carries=1, to_apply=combiner, is_associative=true
+  ROOT gte0 = f32[8,256]{1,0} get-tuple-element(scan), index=0
+}
+)";
+
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(kHloText));
+
+  ScanRewriterTriton rewriter(device_info_);
+  ASSERT_OK_AND_ASSIGN(bool changed, rewriter.Run(module.get()));
+  EXPECT_TRUE(changed);
+}
+
+TEST_F(ScanRewriterTritonTest, SmallScanWithTransposeProducerRewritten) {
+  constexpr absl::string_view kHloText = R"(
+HloModule small_scan_transpose_producer
+
+combiner {
+  in = f32[8] parameter(0)
+  carry = f32[8] parameter(1)
+  add = f32[8] add(carry, in)
+  ROOT t = (f32[8], f32[8]) tuple(add, add)
+}
+
+ENTRY main {
+  input = f32[256,8]{1,0} parameter(0)
+  transposed = f32[8,256]{1,0} transpose(input), dimensions={1,0}
+  zero = f32[] constant(0)
+  init = f32[8]{0} broadcast(zero), dimensions={}
+  scan = (f32[8,256]{1,0}, f32[8]{0}) scan(transposed, init), dimensions={1}, num_carries=1, to_apply=combiner, is_associative=true
+  ROOT gte0 = f32[8,256]{1,0} get-tuple-element(scan), index=0
+}
+)";
+
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(kHloText));
+
+  ScanRewriterTriton rewriter(device_info_);
+  ASSERT_OK_AND_ASSIGN(bool changed, rewriter.Run(module.get()));
+  EXPECT_TRUE(changed);
+}
+
+TEST_F(ScanRewriterTritonTest,
+       SmallScanWithBroadcastedEffectiveScalarSliceOperandRewritten) {
+  constexpr absl::string_view kHloText = R"(
+HloModule small_scan_scalar_slice_broadcast
+
+combiner {
+  in = f32[8] parameter(0)
+  carry = f32[8] parameter(1)
+  add = f32[8] add(carry, in)
+  ROOT t = (f32[8], f32[8]) tuple(add, add)
+}
+
+ENTRY main {
+  input = f32[8,256]{1,0} parameter(0)
+  scales = f32[4]{0} parameter(1)
+  scale_slice = f32[1]{0} slice(scales), slice={[2:3]}
+  scale_scalar = f32[] reshape(scale_slice)
+  scale_bcast = f32[8,256]{1,0} broadcast(scale_scalar), dimensions={}
+  scaled = f32[8,256]{1,0} multiply(input, scale_bcast)
+  zero = f32[] constant(0)
+  init = f32[8]{0} broadcast(zero), dimensions={}
+  scan = (f32[8,256]{1,0}, f32[8]{0}) scan(scaled, init), dimensions={1}, num_carries=1, to_apply=combiner, is_associative=true
+  ROOT gte0 = f32[8,256]{1,0} get-tuple-element(scan), index=0
+}
+)";
+
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(kHloText));
+
+  ScanRewriterTriton rewriter(device_info_);
+  ASSERT_OK_AND_ASSIGN(bool changed, rewriter.Run(module.get()));
+  EXPECT_TRUE(changed);
+}
+
 }  // namespace
 }  // namespace gpu
 }  // namespace xla
